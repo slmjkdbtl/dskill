@@ -1,7 +1,8 @@
-LDFLAGS += -framework CoreServices
+CFLAGS += -std=c99 -Wall -O2 -ObjC
+LDFLAGS += -framework CoreServices -framework Foundation
 
 dskill: dskill.c
-	cc $< $(LDFLAGS) -o $@
+	cc $< $(CFLAGS) $(LDFLAGS) -o $@
 
 .PHONY: run
 run: dskill

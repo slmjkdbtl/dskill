@@ -4,11 +4,41 @@
 #include <stdbool.h>
 #include <dirent.h>
 #include <time.h>
+#include <limits.h>
+#include <mach-o/dyld.h>
 #include <CoreServices/CoreServices.h>
+#include <Foundation/Foundation.h>
 
 #define EVIL ".DS_Store"
-#define NANOSEC 1000000000
 #define LATENCY 0.5
+#define NANOSEC 1000000000
+#define LAUNCHCTL_BIN   "/bin/launchctl"
+#define PLIST_NAME "xyz.space55.dskill"
+#define PLIST_PATH "%s/Library/LaunchAgents/"PLIST_NAME".plist"
+
+#define PLIST_CONTENT \
+	"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" \
+	"<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n" \
+	"<plist version=\"1.0\">\n" \
+	"<dict>\n" \
+	"    <key>Label</key>\n" \
+	"    <string>"PLIST_NAME"</string>\n" \
+	"    <key>ProgramArguments</key>\n" \
+	"    <array>\n" \
+	"        <string>%s</string>\n" \
+	"        <string>guard</string>\n" \
+	"    </array>\n" \
+	"    <key>RunAtLoad</key>\n" \
+	"    <true/>\n" \
+	"    <key>KeepAlive</key>\n" \
+	"    <true/>\n" \
+	"    <key>StandardOutPath</key>\n" \
+	"    <string>/tmp/dskill.out.log</string>\n" \
+	"    <key>StandardErrorPath</key>\n" \
+	"    <string>/tmp/dskill.err.log</string>\n" \
+	"</dict>\n" \
+	"</plist>"
+
 
 bool is_evil(char *path) {
 	return strcmp(path + strlen(path) - strlen(EVIL), EVIL) == 0;
@@ -18,13 +48,37 @@ void help() {
 	printf("Fuck .DS_Store\n");
 	printf("\n");
 	printf("USAGE\n");
-	printf("\n");
 	printf("  $ dskill <cmd>\n");
 	printf("\n");
 	printf("CMD\n");
-	printf("\n");
 	printf("  kill      delete all .DS_Store now\n");
-	printf("  guard     start daemon and prevent creation of .DS_Store forever\n");
+	printf("  guard     start daemon and prevent creation of .DS_Store\n");
+}
+
+void help_service() {
+	printf("Manage dskill guard service\n");
+	printf("\n");
+	printf("USAGE\n");
+	printf("  $ dskill service <cmd>\n");
+	printf("\n");
+	printf("CMD\n");
+	printf("  start       start the service\n");
+	printf("  stop        stop the service\n");
+}
+
+void error(const char *format, ...) {
+	va_list args;
+	va_start(args, format);
+	vfprintf(stderr, format, args);
+	va_end(args);
+	exit(EXIT_FAILURE);
+}
+
+void warn(const char *format, ...) {
+	va_list args;
+	va_start(args, format);
+	vfprintf(stderr, format, args);
+	va_end(args);
 }
 
 void fsevent_callback(
@@ -35,26 +89,39 @@ void fsevent_callback(
 	const FSEventStreamEventFlags *event_flags,
 	const FSEventStreamEventId *event_ids
 ) {
+
 	for (int i = 0; i < num_events; i++) {
+
 		char *path = ((char**)event_paths)[i];
+
 		if (!is_evil(path)) {
 			continue;
 		}
+
 		FSEventStreamEventFlags flags = event_flags[i];
+
 		if (flags & kFSEventStreamEventFlagItemRemoved) {
 			continue;
 		}
+
 		if (flags & kFSEventStreamEventFlagItemCreated) {
 			printf("%s\n", path);
 			remove(path);
 		}
+
 	}
+
 }
 
-int guard() {
+int guard(char *path) {
 
-	CFStringRef path = CFSTR(".");
-	CFArrayRef paths = CFArrayCreate(NULL, (const void **)&path, 1, NULL);
+	CFStringRef p = CFStringCreateWithCString(
+		NULL,
+		path,
+		kCFStringEncodingUTF8
+	);
+
+	CFArrayRef paths = CFArrayCreate(NULL, (const void **)&p, 1, NULL);
 
 	FSEventStreamRef stream = FSEventStreamCreate(
 		NULL,
@@ -70,7 +137,7 @@ int guard() {
 	CFRelease(paths);
 
 	if (stream == NULL) {
-		printf("failed to start fsevent stream\n");
+		error("failed to create fsevent stream\n");
 		return EXIT_FAILURE;
 	}
 
@@ -78,7 +145,7 @@ int guard() {
 	FSEventStreamSetDispatchQueue(stream, queue);
 
 	if (!FSEventStreamStart(stream)) {
-		printf("failed to start fsevent stream\n");
+		error("failed to start fsevent stream\n");
 		return EXIT_FAILURE;
 	}
 
@@ -97,51 +164,103 @@ int guard() {
 
 }
 
-char *join_path(char *p1, char *p2) {
-	if (strcmp(p1, ".") == 0) return strdup(p2);
-	char *path = malloc(strlen(p1) + strlen(p2) + 2);
-	sprintf(path, "%s/%s", p1, p2);
-	return path;
-}
-
 void clean_dir(char *dir) {
+
 	DIR *d = opendir(dir);
+	struct dirent *entry;
+
 	if (!d) {
-		printf("failed to open %s\n", dir);
+		warn("failed to open %s\n", dir);
 		return;
 	}
-	struct dirent *entry;
+
 	while ((entry = readdir(d))) {
-		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+
+		if (strcmp(entry->d_name, ".") == 0
+			|| strcmp(entry->d_name, "..") == 0) {
 			continue;
 		}
+
+		char path[PATH_MAX];
+
+		if (strcmp(dir, ".") == 0) {
+			sprintf(path, "%s", entry->d_name);
+		} else {
+			sprintf(path, "%s/%s", dir, entry->d_name);
+		}
+
 		if (strcmp(entry->d_name, EVIL) == 0) {
-			char *path = join_path(dir, EVIL);
 			printf("%s\n", path);
 			remove(path);
-			free(path);
 		} else if (entry->d_type == DT_DIR) {
-			char *path = join_path(dir, entry->d_name);
 			clean_dir(path);
-			free(path);
 		}
+
 	}
+
 	closedir(d);
+
+}
+
+void service_start() {
+
+	char exe_path[PATH_MAX];
+	char plist_path[PATH_MAX];
+	uint32_t exe_path_size = sizeof(exe_path);
+
+	if (_NSGetExecutablePath(exe_path, &exe_path_size) != 0) {
+		error("failed to get executable path\n");
+	}
+
+	sprintf(plist_path, PLIST_PATH, [NSHomeDirectory() UTF8String]);
+
+	if (access(plist_path, F_OK) != 0) {
+		FILE *f = fopen(plist_path, "w");
+		fprintf(f, PLIST_CONTENT, exe_path);
+		fclose(f);
+	}
+
+	char cmd[1024];
+	sprintf(cmd, "launchctl load -w %s", plist_path);
+	system(cmd);
+
+}
+
+void service_stop() {
+	char plist_path[PATH_MAX];
+	sprintf(plist_path, PLIST_PATH, [NSHomeDirectory() UTF8String]);
+	char cmd[1024];
+	sprintf(cmd, "launchctl unload %s", plist_path);
+	system(cmd);
 }
 
 int main(int argc, char **argv) {
+
 	if (argc < 2) {
 		help();
 		return EXIT_SUCCESS;
 	}
+
 	char *cmd = argv[1];
+
 	if (strcmp(cmd, "guard") == 0) {
-		return guard();
+		return guard(".");
 	} else if (strcmp(cmd, "kill") == 0) {
 		clean_dir(".");
+	} else if (strcmp(cmd, "service") == 0) {
+		if (argc < 3) {
+			help_service();
+			return EXIT_SUCCESS;
+		}
+		char *service_cmd = argv[2];
+		if (strcmp(service_cmd, "start") == 0) {
+			service_start();
+		} else if (strcmp(service_cmd, "stop") == 0) {
+			service_stop();
+		}
 		return EXIT_SUCCESS;
-	} else {
-		help();
 	}
+
 	return EXIT_SUCCESS;
+
 }
