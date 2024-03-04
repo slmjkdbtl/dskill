@@ -3,9 +3,12 @@
 #include <string.h>
 #include <stdbool.h>
 #include <dirent.h>
+#include <time.h>
 #include <CoreServices/CoreServices.h>
 
 #define EVIL ".DS_Store"
+#define NANOSEC 1000000000
+#define LATENCY 0.5
 
 bool is_evil(char *path) {
 	return strcmp(path + strlen(path) - strlen(EVIL), EVIL) == 0;
@@ -42,7 +45,7 @@ void fsevent_callback(
 			continue;
 		}
 		if (flags & kFSEventStreamEventFlagItemCreated) {
-			printf("removing %s\n", path);
+			printf("%s\n", path);
 			remove(path);
 		}
 	}
@@ -59,7 +62,7 @@ int guard() {
 		NULL,
 		paths,
 		kFSEventStreamEventIdSinceNow,
-		0.5,
+		LATENCY,
 		kFSEventStreamCreateFlagFileEvents
 			| kFSEventStreamCreateFlagNoDefer
 	);
@@ -79,24 +82,25 @@ int guard() {
 		return EXIT_FAILURE;
 	}
 
-	for (;;) {}
-	dispatch_release(queue);
+	for (;;) {
+		nanosleep(&(struct timespec){
+			.tv_sec = 0,
+			.tv_nsec = LATENCY * NANOSEC,
+		}, NULL);
+    }
+
+	FSEventStreamStop(stream);
 	FSEventStreamRelease(stream);
+	dispatch_release(queue);
 
 	return EXIT_SUCCESS;
 
 }
 
 char *join_path(char *p1, char *p2) {
-	if (strcmp(p1, ".") == 0) {
-		return strdup(p2);
-	}
-	int l1 = strlen(p1);
-	int l2 = strlen(p2);
-	char *path = malloc(l1 + l2 + 1 + 1);
-	strcpy(path, p1);
-	strcpy(path + strlen(p1), "/");
-	strcpy(path + strlen(p1) + 1, p2);
+	if (strcmp(p1, ".") == 0) return strdup(p2);
+	char *path = malloc(strlen(p1) + strlen(p2) + 2);
+	sprintf(path, "%s/%s", p1, p2);
 	return path;
 }
 
@@ -125,11 +129,6 @@ void clean_dir(char *dir) {
 	closedir(d);
 }
 
-int clean() {
-	clean_dir(".");
-	return EXIT_SUCCESS;
-}
-
 int main(int argc, char **argv) {
 	if (argc < 2) {
 		help();
@@ -139,7 +138,8 @@ int main(int argc, char **argv) {
 	if (strcmp(cmd, "guard") == 0) {
 		return guard();
 	} else if (strcmp(cmd, "kill") == 0) {
-		return clean();
+		clean_dir(".");
+		return EXIT_SUCCESS;
 	} else {
 		help();
 	}

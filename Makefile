@@ -1,7 +1,7 @@
 LDFLAGS += -framework CoreServices
 
 dskill: dskill.c
-	cc $< $(CFLAGS) $(LDFLAGS) -o $@
+	cc $< $(LDFLAGS) -o $@
 
 .PHONY: run
 run: dskill
