@@ -1,25 +1,17 @@
-OVERVIEW
+kill all .DS_Store
 
-  dskill is a tool to KILL .DS_Store!
+1. clone and install
 
-INSTALL
+  $ git clone https://github.com/slmjkdbtl/dskill
+  $ cd dskill
+  $ make install
 
-    $ make install
+2. kill existing .DS_Store first
 
-  this will build and install the `dskill` binary to /usr/local/bin
+  $ dskill kill ~
 
-USAGE
+3. start service to prevent creation of .DS_Store
 
-    $ dskill kill
+  $ dskill service start
 
-  remove all .DS_Store recursively under current directory
-
-    $ dskill guard
-
-  start a process to prevent creation of .DS_Store recursively under current
-  directory
-
-    $ dskill service start
-
-  start a launchd service to always run `dskill guard` on root / directory
-  in the background, completely deny any existence of .DS_Store
+4. enjoy life

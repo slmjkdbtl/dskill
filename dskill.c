@@ -12,9 +12,8 @@
 
 #define EVIL ".DS_Store"
 #define LATENCY 0.5
-#define NANOSEC 1000000000
-#define PLIST_NAME "xyz.space55.dskill"
-#define PLIST_PATH "%s/Library/LaunchAgents/"PLIST_NAME".plist"
+#define ID "xyz.space55.dskill"
+#define PLIST_PATH "%s/Library/LaunchAgents/"ID".plist"
 
 #define PLIST_CONTENT \
 	"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" \
@@ -22,7 +21,7 @@
 	"<plist version=\"1.0\">\n" \
 	"<dict>\n" \
 	"    <key>Label</key>\n" \
-	"    <string>"PLIST_NAME"</string>\n" \
+	"    <string>"ID"</string>\n" \
 	"    <key>ProgramArguments</key>\n" \
 	"    <array>\n" \
 	"        <string>%s</string>\n" \
@@ -44,14 +43,19 @@ char *help_msg =
 "\n"
 "USAGE\n"
 "\n"
-"  $ dskill service <cmd>\n"
+"  $ dskill <cmd> [opts]\n"
 "\n"
 "COMMANDS\n"
 "\n"
-"  kill      remove all .DS_Store recursively under current directory\n"
-"  guard     start a process to prevent creation of .DS_Store recursively\n"
-"            under current directory\n"
-"  service   manage launchd service for dskill guard\n";
+"  kill           remove all .DS_Store recursively under current directory\n"
+"  guard          start a process to prevent creation of .DS_Store recursively\n"
+"                 under current directory\n"
+"  service        manage launchd service for dskill guard\n"
+"\n"
+"OPTIONS\n"
+"\n"
+"  -e, --exclude  exclude a directory pattern\n"
+"  -h, --help     display help message\n";
 
 char *service_help_msg =
 "Manage dskill guard service\n"
@@ -64,6 +68,11 @@ char *service_help_msg =
 "\n"
 "  start     start the service, run `dskill guard` in the background\n"
 "  stop      stop the service\n";
+
+typedef struct flags {
+	int num_excludes;
+	char *excludes[64];
+} flags;
 
 bool is_evil(char *path) {
 	return strcmp(path + strlen(path) - strlen(EVIL), EVIL) == 0;
@@ -84,47 +93,48 @@ void warn(const char *format, ...) {
 	va_end(args);
 }
 
+bool is_excluded(char *path, flags *f) {
+	for (int i = 0; i < f->num_excludes; i++) {
+		// TODO
+		if (strcmp(path, f->excludes[i]) == 0) return true;
+	}
+	return false;
+}
+
 void fsevent_callback(
 	ConstFSEventStreamRef ref,
-	void *client_callBack_info,
+	void *data,
 	size_t num_events,
 	void *event_paths,
 	const FSEventStreamEventFlags *event_flags,
 	const FSEventStreamEventId *event_ids
 ) {
-
+	flags *f = data;
 	for (int i = 0; i < num_events; i++) {
-
 		char *path = ((char**)event_paths)[i];
-
 		if (!is_evil(path)) {
 			continue;
 		}
-
+		if (is_excluded(path, f)) {
+			continue;
+		}
 		FSEventStreamEventFlags flags = event_flags[i];
-
 		if (flags & kFSEventStreamEventFlagItemRemoved) {
 			continue;
 		}
-
 		if (flags & kFSEventStreamEventFlagItemCreated) {
 			printf("%s\n", path);
 			remove(path);
 		}
-
 	}
-
 }
 
-void guard(char *path) {
+void guard(char *path, flags *f) {
 
 	DIR *d = opendir(path);
-
-	if (!d) {
-		return error("failed to open directory \"%s\"\n", path);
-	}
-
+	if (!d) return error("failed to open directory \"%s\"\n", path);
 	closedir(d);
+
 	CFStringRef p = CFStringCreateWithCString(
 		NULL,
 		path,
@@ -136,7 +146,13 @@ void guard(char *path) {
 	FSEventStreamRef stream = FSEventStreamCreate(
 		NULL,
 		fsevent_callback,
-		NULL,
+		&(FSEventStreamContext) {
+			.info = f,
+			.copyDescription = NULL,
+			.version = 0,
+			.retain = NULL,
+			.release = NULL,
+		},
 		paths,
 		kFSEventStreamEventIdSinceNow,
 		LATENCY,
@@ -150,7 +166,7 @@ void guard(char *path) {
 		return error("failed to create fsevent stream\n");
 	}
 
-	dispatch_queue_t queue = dispatch_queue_create("xyz.space55.dskill", NULL);
+	dispatch_queue_t queue = dispatch_queue_create(ID, NULL);
 	FSEventStreamSetDispatchQueue(stream, queue);
 
 	if (!FSEventStreamStart(stream)) {
@@ -166,7 +182,7 @@ void guard(char *path) {
 
 }
 
-void clean_dir(char *dir) {
+void clean_dir(char *dir, flags *f) {
 
 	DIR *d = opendir(dir);
 	struct dirent *entry;
@@ -195,7 +211,7 @@ void clean_dir(char *dir) {
 			printf("%s\n", path);
 			remove(path);
 		} else if (entry->d_type == DT_DIR) {
-			clean_dir(path);
+			clean_dir(path, f);
 		}
 
 	}
@@ -204,6 +220,7 @@ void clean_dir(char *dir) {
 
 }
 
+// TODO: how to pass flags, config file?
 void service_start() {
 
 	char plist_path[PATH_MAX];
@@ -241,12 +258,30 @@ int main(int argc, char **argv) {
 		return EXIT_SUCCESS;
 	}
 
+	flags f = {
+		.num_excludes = 0,
+		.excludes = {},
+	};
+
+	// TODO: cmd / opt / path order
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--exclude") == 0) {
+			if (i + 1 >= argc) {
+				error("--exclude requires path followed\n");
+				return EXIT_FAILURE;
+			}
+			f.excludes[f.num_excludes++] = argv[i + 1];
+			i++;
+			continue;
+		}
+	}
+
 	char *cmd = argv[1];
 
 	if (strcmp(cmd, "guard") == 0) {
-		guard(argc >= 3 ? argv[2] : ".");
+		guard(argc >= 3 ? argv[2] : ".", &f);
 	} else if (strcmp(cmd, "kill") == 0) {
-		clean_dir(argc >= 3 ? argv[2] : ".");
+		clean_dir(argc >= 3 ? argv[2] : ".", &f);
 	} else if (strcmp(cmd, "service") == 0) {
 		if (argc < 3) {
 			printf("%s", service_help_msg);
