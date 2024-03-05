@@ -121,8 +121,7 @@ void guard(char *path) {
 	DIR *d = opendir(path);
 
 	if (!d) {
-		error("failed to open directory \"%s\"\n", path);
-		return;
+		return error("failed to open directory \"%s\"\n", path);
 	}
 
 	closedir(d);
@@ -148,16 +147,14 @@ void guard(char *path) {
 	CFRelease(paths);
 
 	if (stream == NULL) {
-		error("failed to create fsevent stream\n");
-		return;
+		return error("failed to create fsevent stream\n");
 	}
 
-	dispatch_queue_t queue = dispatch_queue_create("dskill_queue", NULL);
+	dispatch_queue_t queue = dispatch_queue_create("xyz.space55.dskill", NULL);
 	FSEventStreamSetDispatchQueue(stream, queue);
 
 	if (!FSEventStreamStart(stream)) {
-		error("failed to start fsevent stream\n");
-		return;
+		return error("failed to start fsevent stream\n");
 	}
 
 	sigset_t ss;
@@ -216,14 +213,14 @@ void service_start() {
 		char exe_path[PATH_MAX];
 		uint32_t exe_path_size = sizeof(exe_path);
 		if (_NSGetExecutablePath(exe_path, &exe_path_size) != 0) {
-			error("failed to get executable path\n");
+			return error("failed to get executable path\n");
 		}
 		FILE *f = fopen(plist_path, "w");
 		fprintf(f, PLIST_CONTENT, exe_path);
 		fclose(f);
 	}
 
-	char cmd[1024];
+	char cmd[256];
 	sprintf(cmd, "launchctl load -w %s", plist_path);
 	system(cmd);
 
