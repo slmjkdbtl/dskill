@@ -3,17 +3,18 @@
 #include <string.h>
 #include <stdbool.h>
 #include <dirent.h>
+#include <libgen.h>
 #include <time.h>
 #include <limits.h>
+#include <wordexp.h>
 #include <sys/stat.h>
 #include <mach-o/dyld.h>
 #include <CoreServices/CoreServices.h>
-#include <Foundation/Foundation.h>
 
 #define EVIL ".DS_Store"
 #define LATENCY 0.5
 #define ID "xyz.space55.dskill"
-#define PLIST_PATH "%s/Library/LaunchAgents/"ID".plist"
+#define PLIST_PATH "~/Library/LaunchAgents/"ID".plist"
 
 #define PLIST_CONTENT \
 	"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" \
@@ -74,30 +75,59 @@ typedef struct flags {
 	char *excludes[64];
 } flags;
 
+void flags_free(flags *f) {
+	for (int i = 0; i < f->num_excludes; i++) {
+		free(f->excludes[i]);
+	}
+	f->num_excludes = 0;
+}
+
 bool is_evil(char *path) {
 	return strcmp(path + strlen(path) - strlen(EVIL), EVIL) == 0;
 }
 
-void error(const char *format, ...) {
+void error(const char *fmt, ...) {
 	va_list args;
-	va_start(args, format);
-	vfprintf(stderr, format, args);
+	va_start(args, fmt);
+	vfprintf(stderr, fmt, args);
 	va_end(args);
 	exit(EXIT_FAILURE);
 }
 
-void warn(const char *format, ...) {
+void warn(const char *fmt, ...) {
 	va_list args;
-	va_start(args, format);
-	vfprintf(stderr, format, args);
+	va_start(args, fmt);
+	vfprintf(stderr, fmt, args);
 	va_end(args);
 }
 
+void systemf(const char *fmt, ...) {
+	char cmd[1024];
+	va_list args;
+	va_start(args, fmt);
+	vsprintf(cmd, fmt, args);
+	va_end(args);
+	system(cmd);
+}
+
+char *expand(char *path) {
+	wordexp_t exp_result;
+	wordexp(path, &exp_result, 0);
+	char *expanded = strdup(exp_result.we_wordv[0]);
+	wordfree(&exp_result);
+	return expanded;
+}
+
 bool is_excluded(char *path, flags *f) {
+	char *path2 = strdup(path);
+	char *dir = dirname(path2);
 	for (int i = 0; i < f->num_excludes; i++) {
-		// TODO
-		if (strcmp(path, f->excludes[i]) == 0) return true;
+		char *pat = f->excludes[i];
+		if (strcmp(dir, pat) == 0) {
+			return true;
+		}
 	}
+	free(path2);
 	return false;
 }
 
@@ -220,35 +250,31 @@ void clean_dir(char *dir, flags *f) {
 
 }
 
-// TODO: how to pass flags, config file?
-void service_start() {
-
-	char plist_path[PATH_MAX];
-	sprintf(plist_path, PLIST_PATH, [NSHomeDirectory() UTF8String]);
-
-	if (access(plist_path, F_OK) != 0) {
-		char exe_path[PATH_MAX];
-		uint32_t exe_path_size = sizeof(exe_path);
-		if (_NSGetExecutablePath(exe_path, &exe_path_size) != 0) {
-			return error("failed to get executable path\n");
-		}
-		FILE *f = fopen(plist_path, "w");
-		fprintf(f, PLIST_CONTENT, exe_path);
-		fclose(f);
+// TODO: how to pass flags to service command, config file?
+void service_install() {
+	char *real_plist_path = expand(PLIST_PATH);
+	char exe_path[PATH_MAX];
+	uint32_t exe_path_size = sizeof(exe_path);
+	if (_NSGetExecutablePath(exe_path, &exe_path_size) != 0) {
+		return error("failed to get executable path\n");
 	}
+	FILE *f = fopen(real_plist_path, "w");
+	fprintf(f, PLIST_CONTENT, exe_path);
+	fclose(f);
+	free(real_plist_path);
+}
 
-	char cmd[256];
-	sprintf(cmd, "launchctl load -w %s", plist_path);
-	system(cmd);
-
+void service_start() {
+	char *real_plist_path = expand(PLIST_PATH);
+	if (access(real_plist_path, F_OK) != 0) {
+		service_install();
+	}
+	systemf("launchctl load -w %s", PLIST_PATH);
+	free(real_plist_path);
 }
 
 void service_stop() {
-	char plist_path[PATH_MAX];
-	sprintf(plist_path, PLIST_PATH, [NSHomeDirectory() UTF8String]);
-	char cmd[1024];
-	sprintf(cmd, "launchctl unload %s", plist_path);
-	system(cmd);
+	systemf("launchctl unload %s", PLIST_PATH);
 }
 
 int main(int argc, char **argv) {
@@ -270,7 +296,7 @@ int main(int argc, char **argv) {
 				error("--exclude requires path followed\n");
 				return EXIT_FAILURE;
 			}
-			f.excludes[f.num_excludes++] = argv[i + 1];
+			f.excludes[f.num_excludes++] = expand(argv[i + 1]);
 			i++;
 			continue;
 		}
@@ -295,6 +321,8 @@ int main(int argc, char **argv) {
 		}
 		return EXIT_SUCCESS;
 	}
+
+	flags_free(&f);
 
 	return EXIT_SUCCESS;
 

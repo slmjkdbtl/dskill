@@ -5,13 +5,15 @@ PREFIX ?= /usr/local
 dskill: dskill.c
 	cc $< $(CFLAGS) $(LDFLAGS) -o $@
 
+$(PREFIX)/bin/dskill: dskill
+	install $< $@
+
 .PHONY: run
 run: dskill
 	./$<
 
 .PHONY: install
-install: dskill
-	install $< $(PREFIX)/bin/$<
+install: $(PREFIX)/bin/dskill
 
 .PHONY: clean
 clean:
