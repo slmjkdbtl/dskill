@@ -1,5 +1,6 @@
 CFLAGS += -std=c99 -Wall -O2 -ObjC
 LDFLAGS += -framework CoreServices -framework Foundation
+PREFIX ?= /usr/local
 
 dskill: dskill.c
 	cc $< $(CFLAGS) $(LDFLAGS) -o $@
@@ -10,7 +11,7 @@ run: dskill
 
 .PHONY: install
 install: dskill
-	install $< /usr/local/bin/$<
+	install $< $(PREFIX)/bin/$<
 
 .PHONY: clean
 clean:

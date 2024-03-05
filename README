@@ -1,1 +1,25 @@
-fuck .DS_Store
+OVERVIEW
+
+  dskill is a tool to KILL .DS_Store!
+
+INSTALL
+
+    $ make install
+
+  this will build and install the `dskill` binary to /usr/local/bin
+
+USAGE
+
+    $ dskill kill
+
+  remove all .DS_Store recursively under current directory
+
+    $ dskill guard
+
+  start a process to prevent creation of .DS_Store recursively under current
+  directory
+
+    $ dskill service start
+
+  start a launchd service to always run `dskill guard` on root / directory
+  in the background, completely deny any existence of .DS_Store

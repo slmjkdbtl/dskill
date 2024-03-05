@@ -5,6 +5,7 @@
 #include <dirent.h>
 #include <time.h>
 #include <limits.h>
+#include <sys/stat.h>
 #include <mach-o/dyld.h>
 #include <CoreServices/CoreServices.h>
 #include <Foundation/Foundation.h>
@@ -12,7 +13,6 @@
 #define EVIL ".DS_Store"
 #define LATENCY 0.5
 #define NANOSEC 1000000000
-#define LAUNCHCTL_BIN   "/bin/launchctl"
 #define PLIST_NAME "xyz.space55.dskill"
 #define PLIST_PATH "%s/Library/LaunchAgents/"PLIST_NAME".plist"
 
@@ -39,31 +39,34 @@
 	"</dict>\n" \
 	"</plist>"
 
+char *help_msg =
+"Kill all .DS_Store!\n"
+"\n"
+"USAGE\n"
+"\n"
+"  $ dskill service <cmd>\n"
+"\n"
+"COMMANDS\n"
+"\n"
+"  kill      remove all .DS_Store recursively under current directory\n"
+"  guard     start a process to prevent creation of .DS_Store recursively\n"
+"            under current directory\n"
+"  service   manage launchd service for dskill guard\n";
+
+char *service_help_msg =
+"Manage dskill guard service\n"
+"\n"
+"USAGE\n"
+"\n"
+"  $ dskill service <cmd>\n"
+"\n"
+"COMMANDS\n"
+"\n"
+"  start     start the service, run `dskill guard` in the background\n"
+"  stop      stop the service\n";
 
 bool is_evil(char *path) {
 	return strcmp(path + strlen(path) - strlen(EVIL), EVIL) == 0;
-}
-
-void help() {
-	printf("Fuck .DS_Store\n");
-	printf("\n");
-	printf("USAGE\n");
-	printf("  $ dskill <cmd>\n");
-	printf("\n");
-	printf("CMD\n");
-	printf("  kill      delete all .DS_Store now\n");
-	printf("  guard     start daemon and prevent creation of .DS_Store\n");
-}
-
-void help_service() {
-	printf("Manage dskill guard service\n");
-	printf("\n");
-	printf("USAGE\n");
-	printf("  $ dskill service <cmd>\n");
-	printf("\n");
-	printf("CMD\n");
-	printf("  start       start the service\n");
-	printf("  stop        stop the service\n");
 }
 
 void error(const char *format, ...) {
@@ -113,8 +116,16 @@ void fsevent_callback(
 
 }
 
-int guard(char *path) {
+void guard(char *path) {
 
+	DIR *d = opendir(path);
+
+	if (!d) {
+		error("failed to open directory \"%s\"\n", path);
+		return;
+	}
+
+	closedir(d);
 	CFStringRef p = CFStringCreateWithCString(
 		NULL,
 		path,
@@ -138,7 +149,7 @@ int guard(char *path) {
 
 	if (stream == NULL) {
 		error("failed to create fsevent stream\n");
-		return EXIT_FAILURE;
+		return;
 	}
 
 	dispatch_queue_t queue = dispatch_queue_create("dskill_queue", NULL);
@@ -146,21 +157,15 @@ int guard(char *path) {
 
 	if (!FSEventStreamStart(stream)) {
 		error("failed to start fsevent stream\n");
-		return EXIT_FAILURE;
+		return;
 	}
 
-	for (;;) {
-		nanosleep(&(struct timespec){
-			.tv_sec = 0,
-			.tv_nsec = LATENCY * NANOSEC,
-		}, NULL);
-    }
-
+	sigset_t ss;
+	sigemptyset(&ss);
+	sigsuspend(&ss);
 	FSEventStreamStop(stream);
 	FSEventStreamRelease(stream);
 	dispatch_release(queue);
-
-	return EXIT_SUCCESS;
 
 }
 
@@ -170,7 +175,7 @@ void clean_dir(char *dir) {
 	struct dirent *entry;
 
 	if (!d) {
-		warn("failed to open %s\n", dir);
+		warn("failed to open directory \"%s\"\n", dir);
 		return;
 	}
 
@@ -204,17 +209,15 @@ void clean_dir(char *dir) {
 
 void service_start() {
 
-	char exe_path[PATH_MAX];
 	char plist_path[PATH_MAX];
-	uint32_t exe_path_size = sizeof(exe_path);
-
-	if (_NSGetExecutablePath(exe_path, &exe_path_size) != 0) {
-		error("failed to get executable path\n");
-	}
-
 	sprintf(plist_path, PLIST_PATH, [NSHomeDirectory() UTF8String]);
 
 	if (access(plist_path, F_OK) != 0) {
+		char exe_path[PATH_MAX];
+		uint32_t exe_path_size = sizeof(exe_path);
+		if (_NSGetExecutablePath(exe_path, &exe_path_size) != 0) {
+			error("failed to get executable path\n");
+		}
 		FILE *f = fopen(plist_path, "w");
 		fprintf(f, PLIST_CONTENT, exe_path);
 		fclose(f);
@@ -237,19 +240,19 @@ void service_stop() {
 int main(int argc, char **argv) {
 
 	if (argc < 2) {
-		help();
+		printf("%s", help_msg);
 		return EXIT_SUCCESS;
 	}
 
 	char *cmd = argv[1];
 
 	if (strcmp(cmd, "guard") == 0) {
-		return guard(".");
+		guard(argc >= 3 ? argv[2] : ".");
 	} else if (strcmp(cmd, "kill") == 0) {
-		clean_dir(".");
+		clean_dir(argc >= 3 ? argv[2] : ".");
 	} else if (strcmp(cmd, "service") == 0) {
 		if (argc < 3) {
-			help_service();
+			printf("%s", service_help_msg);
 			return EXIT_SUCCESS;
 		}
 		char *service_cmd = argv[2];
