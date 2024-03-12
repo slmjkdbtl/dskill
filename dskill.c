@@ -15,6 +15,7 @@
 #define LATENCY 0.5
 #define ID "xyz.space55.dskill"
 #define PLIST_PATH "~/Library/LaunchAgents/"ID".plist"
+#define NUM_EXCLUDES 64
 
 #define PLIST_CONTENT \
 	"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" \
@@ -72,7 +73,8 @@ char *service_help_msg =
 
 typedef struct flags {
 	int num_excludes;
-	char *excludes[64];
+	char *excludes[NUM_EXCLUDES];
+	bool help;
 } flags;
 
 void flags_free(flags *f) {
@@ -123,93 +125,13 @@ bool is_excluded(char *path, flags *f) {
 	char *dir = dirname(path2);
 	for (int i = 0; i < f->num_excludes; i++) {
 		char *pat = f->excludes[i];
+		// TODO
 		if (strcmp(dir, pat) == 0) {
 			return true;
 		}
 	}
 	free(path2);
 	return false;
-}
-
-void fsevent_callback(
-	ConstFSEventStreamRef ref,
-	void *data,
-	size_t num_events,
-	void *event_paths,
-	const FSEventStreamEventFlags *event_flags,
-	const FSEventStreamEventId *event_ids
-) {
-	flags *f = data;
-	for (int i = 0; i < num_events; i++) {
-		char *path = ((char**)event_paths)[i];
-		if (!is_evil(path)) {
-			continue;
-		}
-		if (is_excluded(path, f)) {
-			continue;
-		}
-		FSEventStreamEventFlags flags = event_flags[i];
-		if (flags & kFSEventStreamEventFlagItemRemoved) {
-			continue;
-		}
-		if (flags & kFSEventStreamEventFlagItemCreated) {
-			printf("%s\n", path);
-			remove(path);
-		}
-	}
-}
-
-void guard(char *path, flags *f) {
-
-	DIR *d = opendir(path);
-	if (!d) return error("failed to open directory \"%s\"\n", path);
-	closedir(d);
-
-	CFStringRef p = CFStringCreateWithCString(
-		NULL,
-		path,
-		kCFStringEncodingUTF8
-	);
-
-	CFArrayRef paths = CFArrayCreate(NULL, (const void **)&p, 1, NULL);
-
-	FSEventStreamRef stream = FSEventStreamCreate(
-		NULL,
-		fsevent_callback,
-		&(FSEventStreamContext) {
-			.info = f,
-			.copyDescription = NULL,
-			.version = 0,
-			.retain = NULL,
-			.release = NULL,
-		},
-		paths,
-		kFSEventStreamEventIdSinceNow,
-		LATENCY,
-		kFSEventStreamCreateFlagFileEvents
-			| kFSEventStreamCreateFlagNoDefer
-	);
-
-	CFRelease(paths);
-
-	if (stream == NULL) {
-		return error("failed to create fsevent stream\n");
-	}
-
-	dispatch_queue_t queue = dispatch_queue_create(ID, NULL);
-	FSEventStreamSetDispatchQueue(stream, queue);
-
-	if (!FSEventStreamStart(stream)) {
-		return error("failed to start fsevent stream\n");
-	}
-
-	sigset_t ss;
-	sigemptyset(&ss);
-	sigsuspend(&ss);
-	FSEventStreamStop(stream);
-	FSEventStreamRelease(stream);
-	dispatch_release(queue);
-
 }
 
 void clean_dir(char *dir, flags *f) {
@@ -250,6 +172,99 @@ void clean_dir(char *dir, flags *f) {
 
 }
 
+void fsevent_callback(
+	ConstFSEventStreamRef ref,
+	void *data,
+	size_t num_events,
+	void *event_paths,
+	const FSEventStreamEventFlags *event_flags,
+	const FSEventStreamEventId *event_ids
+) {
+	flags *f = data;
+	for (int i = 0; i < num_events; i++) {
+		char *path = ((char**)event_paths)[i];
+		if (!is_evil(path)) {
+			continue;
+		}
+		if (is_excluded(path, f)) {
+			continue;
+		}
+		FSEventStreamEventFlags flags = event_flags[i];
+		if (flags & kFSEventStreamEventFlagItemRemoved) {
+			continue;
+		}
+		if (flags & kFSEventStreamEventFlagItemCreated) {
+			printf("%s\n", path);
+			remove(path);
+		}
+	}
+}
+
+void guard(char **paths, int num_paths, flags *f) {
+
+	CFStringRef cf_paths[num_paths];
+
+	for (int i = 0; i < num_paths; i++) {
+		DIR *d = opendir(paths[i]);
+		if (!d) return error("failed to open directory \"%s\"\n", paths[i]);
+		closedir(d);
+		cf_paths[i] = CFStringCreateWithCString(
+			NULL,
+			paths[i],
+			kCFStringEncodingUTF8
+		);
+	}
+
+	CFArrayRef cf_paths_arr = CFArrayCreate(
+		NULL,
+		(const void **)cf_paths,
+		num_paths,
+		NULL
+	);
+
+	FSEventStreamRef stream = FSEventStreamCreate(
+		NULL,
+		fsevent_callback,
+		&(FSEventStreamContext) {
+			.info = f,
+			.copyDescription = NULL,
+			.version = 0,
+			.retain = NULL,
+			.release = NULL,
+		},
+		cf_paths_arr,
+		kFSEventStreamEventIdSinceNow,
+		LATENCY,
+		kFSEventStreamCreateFlagFileEvents
+			| kFSEventStreamCreateFlagNoDefer
+	);
+
+	for (int i = 0; i < num_paths; i++) {
+		CFRelease(cf_paths[i]);
+	}
+
+	CFRelease(cf_paths_arr);
+
+	if (stream == NULL) {
+		return error("failed to create fsevent stream\n");
+	}
+
+	dispatch_queue_t queue = dispatch_queue_create(ID, NULL);
+	FSEventStreamSetDispatchQueue(stream, queue);
+
+	if (!FSEventStreamStart(stream)) {
+		return error("failed to start fsevent stream\n");
+	}
+
+	sigset_t ss;
+	sigemptyset(&ss);
+	sigsuspend(&ss);
+	FSEventStreamStop(stream);
+	FSEventStreamRelease(stream);
+	dispatch_release(queue);
+
+}
+
 // TODO: how to pass flags to service command, config file?
 void service_install() {
 	char *real_plist_path = expand(PLIST_PATH);
@@ -261,6 +276,12 @@ void service_install() {
 	FILE *f = fopen(real_plist_path, "w");
 	fprintf(f, PLIST_CONTENT, exe_path);
 	fclose(f);
+	free(real_plist_path);
+}
+
+void service_uninstall() {
+	char *real_plist_path = expand(PLIST_PATH);
+	remove(real_plist_path);
 	free(real_plist_path);
 }
 
@@ -287,17 +308,25 @@ int main(int argc, char **argv) {
 	flags f = {
 		.num_excludes = 0,
 		.excludes = {},
+		.help = false,
 	};
 
 	// TODO: cmd / opt / path order
 	for (int i = 1; i < argc; i++) {
-		if (strcmp(argv[i], "--exclude") == 0) {
+		if (strcmp(argv[i], "--exclude") == 0 || strcmp(argv[i], "-e") == 0) {
 			if (i + 1 >= argc) {
 				error("--exclude requires path followed\n");
 				return EXIT_FAILURE;
 			}
+			if (f.num_excludes + 1 > NUM_EXCLUDES) {
+				error("cannot have more than %d excludes\n", NUM_EXCLUDES);
+				return EXIT_FAILURE;
+			}
 			f.excludes[f.num_excludes++] = expand(argv[i + 1]);
 			i++;
+			continue;
+		} else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+			f.help = true;
 			continue;
 		}
 	}
@@ -305,11 +334,15 @@ int main(int argc, char **argv) {
 	char *cmd = argv[1];
 
 	if (strcmp(cmd, "guard") == 0) {
-		guard(argc >= 3 ? argv[2] : ".", &f);
+		if (argc >= 3) {
+			guard(argv + 2, argc - 2, &f);
+		} else {
+			guard((char*[]){ "." }, 1, &f);
+		}
 	} else if (strcmp(cmd, "kill") == 0) {
 		clean_dir(argc >= 3 ? argv[2] : ".", &f);
 	} else if (strcmp(cmd, "service") == 0) {
-		if (argc < 3) {
+		if (argc < 3 || f.help) {
 			printf("%s", service_help_msg);
 			return EXIT_SUCCESS;
 		}
@@ -320,6 +353,8 @@ int main(int argc, char **argv) {
 			service_stop();
 		}
 		return EXIT_SUCCESS;
+	} else {
+		printf("%s", help_msg);
 	}
 
 	flags_free(&f);
