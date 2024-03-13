@@ -42,12 +42,15 @@ char *service_help_msg =
 "\n"
 "USAGE\n"
 "\n"
-"  $ dskill service <cmd>\n"
+"  $ dskill service <cmd> -- [flags]\n"
 "\n"
 "COMMANDS\n"
 "\n"
-"  start     start the service, run `dskill guard` in the background\n"
-"  stop      stop the service\n";
+"  start       install and start the launchd service, run `dskill guard` in the\n"
+"              background\n"
+"  stop        stop the service\n"
+"  install     install the service plist to ~/Library/LaunchAgents\n"
+"  uninstall   stop and remove the service plist from ~/Library/LaunchAgents\n";
 
 typedef struct flags {
 	int num_excludes;
@@ -329,6 +332,7 @@ int main(int argc, char **argv) {
 	flags f = flags_new();
 	char *args[16] = {0};
 	int num_args = 0;
+	int forward_pos = -1;
 
 	// TODO: cmd / opt / path order
 	for (int i = 2; i < argc; i++) {
@@ -347,6 +351,11 @@ int main(int argc, char **argv) {
 		} else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
 			f.help = true;
 			continue;
+		} else if (strcmp(argv[i], "--") == 0) {
+			if (i < argc - 1) {
+				forward_pos = i + 1;
+			}
+			break;
 		} else {
 			args[num_args++] = argv[i];
 		}
@@ -369,11 +378,19 @@ int main(int argc, char **argv) {
 		}
 		char *service_cmd = argv[2];
 		if (strcmp(service_cmd, "start") == 0) {
-			service_start(argv + 3, argc - 3);
+			if (forward_pos == -1) {
+				service_start(NULL, 0);
+			} else {
+				service_start(argv + forward_pos, argc - forward_pos);
+			}
 		} else if (strcmp(service_cmd, "stop") == 0) {
 			service_stop();
 		} else if (strcmp(service_cmd, "install") == 0) {
-			service_install(argv + 3, argc - 3);
+			if (forward_pos == -1) {
+				service_install(NULL, 0);
+			} else {
+				service_install(argv + forward_pos, argc - forward_pos);
+			}
 		} else if (strcmp(service_cmd, "uninstall") == 0) {
 			service_uninstall();
 		}
