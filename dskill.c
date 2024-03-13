@@ -12,33 +12,11 @@
 #include <CoreServices/CoreServices.h>
 
 #define EVIL ".DS_Store"
-#define LATENCY 0.5
+#define LATENCY 0.1
 #define ID "xyz.space55.dskill"
 #define PLIST_PATH "~/Library/LaunchAgents/"ID".plist"
-#define NUM_EXCLUDES 64
-
-#define PLIST_CONTENT \
-	"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" \
-	"<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n" \
-	"<plist version=\"1.0\">\n" \
-	"<dict>\n" \
-	"    <key>Label</key>\n" \
-	"    <string>"ID"</string>\n" \
-	"    <key>ProgramArguments</key>\n" \
-	"    <array>\n" \
-	"        <string>%s</string>\n" \
-	"        <string>guard</string>\n" \
-	"    </array>\n" \
-	"    <key>RunAtLoad</key>\n" \
-	"    <true/>\n" \
-	"    <key>KeepAlive</key>\n" \
-	"    <true/>\n" \
-	"    <key>StandardOutPath</key>\n" \
-	"    <string>/tmp/dskill.out.log</string>\n" \
-	"    <key>StandardErrorPath</key>\n" \
-	"    <string>/tmp/dskill.err.log</string>\n" \
-	"</dict>\n" \
-	"</plist>"
+#define NUM_EXCLUDES 16
+#define NUM_PATHS 16
 
 char *help_msg =
 "Kill all .DS_Store!\n"
@@ -74,12 +52,27 @@ char *service_help_msg =
 typedef struct flags {
 	int num_excludes;
 	char *excludes[NUM_EXCLUDES];
+	int num_paths;
+	char *paths[NUM_PATHS];
 	bool help;
 } flags;
+
+flags flags_new() {
+	return (flags) {
+		.num_excludes = 0,
+		.excludes = {},
+		.num_paths = 0,
+		.paths = {},
+		.help = false,
+	};
+}
 
 void flags_free(flags *f) {
 	for (int i = 0; i < f->num_excludes; i++) {
 		free(f->excludes[i]);
+	}
+	for (int i = 0; i < f->num_paths; i++) {
+		free(f->paths[i]);
 	}
 	f->num_excludes = 0;
 }
@@ -265,30 +258,51 @@ void guard(char **paths, int num_paths, flags *f) {
 
 }
 
-// TODO: how to pass flags to service command, config file?
-void service_install() {
+void service_install(char **args, int num_args) {
 	char *real_plist_path = expand(PLIST_PATH);
 	char exe_path[PATH_MAX];
 	uint32_t exe_path_size = sizeof(exe_path);
 	if (_NSGetExecutablePath(exe_path, &exe_path_size) != 0) {
 		return error("failed to get executable path\n");
 	}
+	char plist[2048];
+	char *c = plist;
+	c += sprintf(c, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+	c += sprintf(c, "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n");
+	c += sprintf(c, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+	c += sprintf(c, "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n");
+	c += sprintf(c, "<plist version=\"1.0\">\n");
+	c += sprintf(c, "<dict>\n");
+	c += sprintf(c, "    <key>Label</key>\n");
+	c += sprintf(c, "    <string>"ID"</string>\n");
+	c += sprintf(c, "    <key>ProgramArguments</key>\n");
+	c += sprintf(c, "    <array>\n");
+	c += sprintf(c, "        <string>%s</string>\n", exe_path);
+	c += sprintf(c, "        <string>guard</string>\n");
+	for (int i = 0; i < num_args; i++) {
+		c += sprintf(c, "        <string>%s</string>\n", args[i]);
+	}
+	c += sprintf(c, "    </array>\n");
+	c += sprintf(c, "    <key>RunAtLoad</key>\n");
+	c += sprintf(c, "    <true/>\n");
+	c += sprintf(c, "    <key>KeepAlive</key>\n");
+	c += sprintf(c, "    <true/>\n");
+	c += sprintf(c, "    <key>StandardOutPath</key>\n");
+	c += sprintf(c, "    <string>/tmp/dskill.out.log</string>\n");
+	c += sprintf(c, "    <key>StandardErrorPath</key>\n");
+	c += sprintf(c, "    <string>/tmp/dskill.err.log</string>\n");
+	c += sprintf(c, "</dict>\n");
+	c += sprintf(c, "</plist>");
 	FILE *f = fopen(real_plist_path, "w");
-	fprintf(f, PLIST_CONTENT, exe_path);
+	fwrite(plist, 1, strlen(plist), f);
 	fclose(f);
 	free(real_plist_path);
 }
 
-void service_uninstall() {
-	char *real_plist_path = expand(PLIST_PATH);
-	remove(real_plist_path);
-	free(real_plist_path);
-}
-
-void service_start() {
+void service_start(char **args, int num_args) {
 	char *real_plist_path = expand(PLIST_PATH);
 	if (access(real_plist_path, F_OK) != 0) {
-		service_install();
+		service_install(args, num_args);
 	}
 	systemf("launchctl load -w %s", PLIST_PATH);
 	free(real_plist_path);
@@ -298,6 +312,13 @@ void service_stop() {
 	systemf("launchctl unload %s", PLIST_PATH);
 }
 
+void service_uninstall() {
+	service_stop();
+	char *real_plist_path = expand(PLIST_PATH);
+	remove(real_plist_path);
+	free(real_plist_path);
+}
+
 int main(int argc, char **argv) {
 
 	if (argc < 2) {
@@ -305,14 +326,12 @@ int main(int argc, char **argv) {
 		return EXIT_SUCCESS;
 	}
 
-	flags f = {
-		.num_excludes = 0,
-		.excludes = {},
-		.help = false,
-	};
+	flags f = flags_new();
+	char *args[16] = {0};
+	int num_args = 0;
 
 	// TODO: cmd / opt / path order
-	for (int i = 1; i < argc; i++) {
+	for (int i = 2; i < argc; i++) {
 		if (strcmp(argv[i], "--exclude") == 0 || strcmp(argv[i], "-e") == 0) {
 			if (i + 1 >= argc) {
 				error("--exclude requires path followed\n");
@@ -322,25 +341,27 @@ int main(int argc, char **argv) {
 				error("cannot have more than %d excludes\n", NUM_EXCLUDES);
 				return EXIT_FAILURE;
 			}
-			f.excludes[f.num_excludes++] = expand(argv[i + 1]);
+			f.excludes[f.num_excludes++] = strdup(argv[i + 1]);
 			i++;
 			continue;
 		} else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
 			f.help = true;
 			continue;
+		} else {
+			args[num_args++] = argv[i];
 		}
 	}
 
 	char *cmd = argv[1];
 
 	if (strcmp(cmd, "guard") == 0) {
-		if (argc >= 3) {
-			guard(argv + 2, argc - 2, &f);
+		if (num_args > 0) {
+			guard(args, num_args, &f);
 		} else {
 			guard((char*[]){ "." }, 1, &f);
 		}
 	} else if (strcmp(cmd, "kill") == 0) {
-		clean_dir(argc >= 3 ? argv[2] : ".", &f);
+		clean_dir(num_args > 0 ? args[0] : ".", &f);
 	} else if (strcmp(cmd, "service") == 0) {
 		if (argc < 3 || f.help) {
 			printf("%s", service_help_msg);
@@ -348,9 +369,13 @@ int main(int argc, char **argv) {
 		}
 		char *service_cmd = argv[2];
 		if (strcmp(service_cmd, "start") == 0) {
-			service_start();
+			service_start(argv + 3, argc - 3);
 		} else if (strcmp(service_cmd, "stop") == 0) {
 			service_stop();
+		} else if (strcmp(service_cmd, "install") == 0) {
+			service_install(argv + 3, argc - 3);
+		} else if (strcmp(service_cmd, "uninstall") == 0) {
+			service_uninstall();
 		}
 		return EXIT_SUCCESS;
 	} else {
